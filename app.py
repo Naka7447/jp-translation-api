@@ -1,30 +1,32 @@
+"""
+Kikoeru Translation API
+A small Flask server that forwards translation requests to a community-hosted
+NLLB API (winstxnhdw/nllb-api on Hugging Face Spaces), avoiding the need to
+load the model locally (which exceeds free-tier hosting memory limits).
+"""
+
 import os
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 app = Flask(__name__)
 CORS(app)
 
-print("Loading NLLB model... this happens once when the server starts.")
-model_name_nllb = "facebook/nllb-200-distilled-600M"
-tokenizer_nllb = AutoTokenizer.from_pretrained(model_name_nllb)
-model_nllb = AutoModelForSeq2SeqLM.from_pretrained(model_name_nllb)
-print("Model loaded. Server ready.")
+NLLB_API_BASE = "https://winstxnhdw-nllb-api.hf.space/api/v4/translator"
 
-
-def translate(text, src_lang, tgt_lang):
-    tokenizer_nllb.src_lang = src_lang
-    inputs = tokenizer_nllb(text, return_tensors="pt")
-    tokens = model_nllb.generate(
-        **inputs,
-        forced_bos_token_id=tokenizer_nllb.convert_tokens_to_ids(tgt_lang)
-    )
-    return tokenizer_nllb.batch_decode(tokens, skip_special_tokens=True)[0]
+LANG_CODES = {
+    "ja": "jpn_Jpan",
+    "en": "eng_Latn",
+}
 
 
 @app.route("/translate", methods=["POST"])
 def translate_endpoint():
+    """
+    Expects JSON body: { "text": "...", "direction": "ja-en" or "en-ja" }
+    Returns JSON: { "translation": "..." }
+    """
     data = request.get_json()
 
     if not data or "text" not in data or "direction" not in data:
@@ -34,13 +36,25 @@ def translate_endpoint():
     direction = data["direction"]
 
     if direction == "ja-en":
-        result = translate(text, "jpn_Jpan", "eng_Latn")
+        source, target = LANG_CODES["ja"], LANG_CODES["en"]
     elif direction == "en-ja":
-        result = translate(text, "eng_Latn", "jpn_Jpan")
+        source, target = LANG_CODES["en"], LANG_CODES["ja"]
     else:
         return jsonify({"error": "direction must be 'ja-en' or 'en-ja'"}), 400
 
-    return jsonify({"translation": result})
+    try:
+        response = requests.get(
+            NLLB_API_BASE,
+            params={"text": text, "source": source, "target": target},
+            timeout=15
+        )
+        response.raise_for_status()
+        result = response.json()
+        # The community API's exact response shape - adjust key if needed
+        translation = result.get("result") or result.get("translation") or str(result)
+        return jsonify({"translation": translation})
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Translation service unavailable: {str(e)}"}), 502
 
 
 @app.route("/health", methods=["GET"])

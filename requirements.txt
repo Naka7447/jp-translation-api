@@ -1,6 +1,4 @@
 flask
 flask-cors
-transformers
-torch
-sentencepiece
+requests
 gunicorn
